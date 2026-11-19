@@ -8,8 +8,6 @@ import { authFetch } from '@/lib/api';
 
 import { Milestone, Project, Proposal } from '@/types';
 import { ImageLightboxModal } from './ImageLightboxModal';
-import { DeliverableItem, DeliverablePreview, normalizeDeliverables } from './DeliverablePreview';
-import { MilestoneProgressBar } from './MilestoneProgressBar';
 import { ProjectChatModal } from './ProjectChatModal';
 import { ProjectCardSkeletonList, ProposalSkeletonList } from '@/components/skeletons';
 
@@ -20,10 +18,7 @@ export function FreelancerDashboard() {
   const [loading, setLoading] = useState(true);
   const [projects, setProjects] = useState<Project[]>([]);
   const [proposals, setProposals] = useState<Proposal[]>([]);
-  const [lightboxState, setLightboxState] = useState<{
-    items: DeliverableItem[];
-    index: number;
-  } | null>(null);
+  const [lightboxImage, setLightboxImage] = useState<{ url: string; name?: string } | null>(null);
 
   // Chat Modal State
   const [chatModalState, setChatModalState] = useState<{
@@ -469,42 +464,71 @@ export function FreelancerDashboard() {
                       {proj.description}
                     </p>
 
-                    {/* Milestones progress & list preview */}
+                    {/* Milestones list preview */}
                     {proj.milestones && proj.milestones.length > 0 && (
-                      <div className="pt-3 border-t border-[#27272a]/60 space-y-2.5" onClick={(e) => e.stopPropagation()}>
-                        <MilestoneProgressBar
-                          milestones={proj.milestones}
-                          totalBudget={proj.budget}
-                          token={proj.token || 'USDC'}
-                          compact
-                        />
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="text-[11px] font-semibold text-[#71717a]">Milestones ({proj.milestones.length}):</span>
-                          {proj.milestones.map((m, idx) => (
-                            <span
-                              key={m.id || idx}
-                              className="text-[11px] bg-[#232326] text-[#e4e4e7] px-2.5 py-0.5 rounded-md border border-[#333338]"
-                            >
-                              {idx + 1}. {m.title} ({m.amount} {proj.token || 'USDC'})
-                            </span>
-                          ))}
-                        </div>
+                      <div className="pt-3 border-t border-[#27272a]/60 flex flex-wrap items-center gap-2">
+                        <span className="text-[11px] font-semibold text-[#71717a]">Milestones ({proj.milestones.length}):</span>
+                        {proj.milestones.map((m, idx) => (
+                          <span
+                            key={m.id || idx}
+                            className="text-[11px] bg-[#232326] text-[#e4e4e7] px-2.5 py-0.5 rounded-md border border-[#333338]"
+                          >
+                            {idx + 1}. {m.title} ({m.amount} {proj.token || 'USDC'})
+                          </span>
+                        ))}
                       </div>
                     )}
 
-                    {/* Files & Deliverable Previews */}
-                    {((proj.attachments && proj.attachments.length > 0) || (proj.files && proj.files.length > 0)) && (() => {
-                      const deliverableItems = normalizeDeliverables(proj.files || proj.attachments || []);
-                      return deliverableItems.length > 0 ? (
-                        <div className="pt-3 border-t border-[#27272a]/60 space-y-2">
-                          <span className="text-[11px] font-semibold text-[#71717a] block">Project Files & Attachments:</span>
-                          <DeliverablePreview
-                            items={deliverableItems}
-                            onInspect={(idx) => setLightboxState({ items: deliverableItems, index: idx })}
-                          />
+                    {/* Files & Image Attachments */}
+                    {((proj.attachments && proj.attachments.length > 0) || (proj.files && proj.files.length > 0)) && (
+                      <div className="pt-3 border-t border-[#27272a]/60 space-y-2">
+                        <span className="text-[11px] font-semibold text-[#71717a] block">Project Files & Attachments:</span>
+                        <div className="flex flex-wrap items-center gap-2">
+                          {(proj.files || proj.attachments || []).map((file: any, fIdx: number) => {
+                            const fileUrl = typeof file === 'string' ? file : (file.file_url || file.file_name);
+                            const fileName = typeof file === 'string' ? file : (file.file_name || 'File Attachment');
+                            const isImage = typeof fileUrl === 'string' && (fileUrl.match(/\.(jpg|jpeg|png|gif|webp|svg)$/i) || fileUrl.startsWith('data:image'));
+
+                            if (isImage) {
+                              return (
+                                <div
+                                  key={fIdx}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setLightboxImage({ url: fileUrl, name: fileName });
+                                  }}
+                                  className="relative group/img cursor-pointer overflow-hidden rounded-xl border border-[#333338] hover:border-indigo-500 transition-all shadow-md"
+                                >
+                                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                                  <img
+                                    src={fileUrl}
+                                    alt={fileName}
+                                    className="w-14 h-14 object-cover transform group-hover/img:scale-110 transition-transform duration-200"
+                                  />
+                                  <div className="absolute inset-0 bg-black/50 opacity-0 group-hover/img:opacity-100 flex items-center justify-center text-white text-[10px] font-bold transition-opacity">
+                                    🔍 Zoom
+                                  </div>
+                                </div>
+                              );
+                            }
+
+                            return (
+                              <a
+                                key={fIdx}
+                                href={fileUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                onClick={(e) => e.stopPropagation()}
+                                className="inline-flex items-center space-x-1.5 px-3 py-1.5 bg-[#232326] hover:bg-[#27272a] text-[#e4e4e7] text-xs rounded-xl border border-[#333338] transition-colors"
+                              >
+                                <span>📄</span>
+                                <span className="truncate max-w-[140px]">{fileName}</span>
+                              </a>
+                            );
+                          })}
                         </div>
-                      ) : null;
-                    })()}
+                      </div>
+                    )}
                   </div>
                 ))}
 
@@ -799,10 +823,7 @@ export function FreelancerDashboard() {
                       return (
                         <div
                           key={fIdx}
-                          onClick={() => {
-                            const items = normalizeDeliverables(viewingProjectDetails.files || viewingProjectDetails.attachments || []);
-                            setLightboxState({ items, index: fIdx });
-                          }}
+                          onClick={() => setLightboxImage({ url: fileUrl, name: fileName })}
                           className="relative group/img cursor-pointer overflow-hidden rounded-xl border border-[#333338] hover:border-indigo-500 transition-all shadow-md"
                         >
                           {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -948,11 +969,11 @@ export function FreelancerDashboard() {
         </div>
       )}
 
-      {/* Interactive Deliverable Lightbox Modal */}
+      {/* Image Lightbox Modal */}
       <ImageLightboxModal
-        items={lightboxState?.items}
-        initialIndex={lightboxState?.index ?? 0}
-        onClose={() => setLightboxState(null)}
+        imageUrl={lightboxImage?.url || null}
+        imageAlt={lightboxImage?.name}
+        onClose={() => setLightboxImage(null)}
       />
 
       {/* Project Direct Chat Modal */}
