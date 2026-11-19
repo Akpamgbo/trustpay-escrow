@@ -5,6 +5,8 @@ import { isConnected, requestAccess, getNetworkDetails, setAllowed, signTransact
 import { toast } from "sonner";
 import { useWalletStore } from "@/store/walletStore";
 import { useRouter } from "next/navigation";
+import { TestnetFaucetModal } from "@/components/TestnetFaucetModal";
+import { fetchAccountBalances, isTestnetNetwork } from "@/lib/friendbot";
 
 const getErrorMessage = (err: any, prefix = ""): string => {
   let msg = "An unknown error occurred";
@@ -35,11 +37,12 @@ interface WalletOption {
 }
 
 export default function WalletConnect() {
-  const { address, activeRole, walletName, setWalletInfo, disconnect } = useWalletStore();
+  const { address, activeRole, walletName, xlmBalance, usdcBalance, isLowBalance, setWalletInfo, setBalances, setNetwork, disconnect } = useWalletStore();
   const [isConnecting, setIsConnecting] = useState(false);
   const [connectingWallet, setConnectingWallet] = useState<WalletType | null>(null);
   const [showEmailModal, setShowEmailModal] = useState(false);
   const [showXBullModal, setShowXBullModal] = useState(false);
+  const [showFaucetModal, setShowFaucetModal] = useState(false);
   const [showManualInput, setShowManualInput] = useState(false);
   const [manualAddress, setManualAddress] = useState("");
   const [emailValue, setEmailValue] = useState("");
@@ -53,6 +56,16 @@ export default function WalletConnect() {
   useEffect(() => {
     setMounted(true);
   }, []);
+
+  useEffect(() => {
+    // Sync Testnet balances into walletStore when connected
+    if (address && isTestnetNetwork()) {
+      setNetwork("TESTNET");
+      fetchAccountBalances(address)
+        .then((res) => setBalances(res.xlmBalance, res.usdcBalance))
+        .catch(() => {});
+    }
+  }, [address, setBalances, setNetwork]);
 
   useEffect(() => {
     // If already connected, redirect to projects portal
@@ -536,6 +549,28 @@ export default function WalletConnect() {
             Multi-Role Active ({activeRole})
           </span>
 
+          {isTestnetNetwork() && (
+            <div className="w-full flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-[#18181b] border border-[#333338] text-xs">
+              <div className="flex items-center gap-2 font-mono text-[#e4e4e7]">
+                <span>{xlmBalance !== null ? `${xlmBalance.toLocaleString()} XLM` : "Checking XLM..."}</span>
+                {usdcBalance !== null && (
+                  <span className="text-emerald-400">• {usdcBalance.toLocaleString()} USDC</span>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowFaucetModal(true)}
+                className={`px-2.5 py-1 rounded-lg font-bold text-[11px] transition-all cursor-pointer ${
+                  isLowBalance
+                    ? "bg-amber-500/20 text-amber-300 border border-amber-500/40 hover:bg-amber-500/30"
+                    : "bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25"
+                }`}
+              >
+                {isLowBalance ? "⚠️ Fund Testnet" : "⛽ Faucet"}
+              </button>
+            </div>
+          )}
+
           <div className="w-full pt-2 flex gap-2">
             <button
               type="button"
@@ -722,6 +757,7 @@ export default function WalletConnect() {
       {/* Render Modals via React Portal */}
       {mounted && emailModalContent && createPortal(emailModalContent, document.body)}
       {mounted && xBullModalContent && createPortal(xBullModalContent, document.body)}
+      <TestnetFaucetModal isOpen={showFaucetModal} onClose={() => setShowFaucetModal(false)} />
     </div>
   );
 }
