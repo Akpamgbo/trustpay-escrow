@@ -1,14 +1,7 @@
 'use client';
 
-import React, { useState, useMemo } from 'react';
+import React, { useState } from 'react';
 import { toast } from 'sonner';
-import {
-  DeliverableItem,
-  DeliverablePreview,
-  detectDeliverableType,
-  normalizeDeliverables,
-} from './DeliverablePreview';
-import { ImageLightboxModal } from './ImageLightboxModal';
 
 export interface ApplicantCardData {
   id: string;
@@ -19,7 +12,6 @@ export interface ApplicantCardData {
   pitch?: string;
   cover_note?: string;
   portfolio_url?: string;
-  deliverables?: Array<string | DeliverableItem | { file_url?: string; file_name?: string; url?: string; name?: string }>;
   status?: 'pending' | 'accepted' | 'denied' | 'granted' | 'rejected';
   created_at?: string;
   granted?: boolean;
@@ -36,27 +28,11 @@ export interface ApplicantCardProps {
 export function ApplicantCard({ applicant, onAccept, onDeny, onOpenChat, isProcessing = false }: ApplicantCardProps) {
   const [copied, setCopied] = useState(false);
   const [actionLoading, setActionLoading] = useState<'accept' | 'deny' | null>(null);
-  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
 
   const walletAddr = applicant.stellar_address || applicant.freelancer_address || applicant.name || 'GAUBK...NLSGV';
   const coverText = applicant.cover_note || applicant.pitch || 'No cover note provided.';
   const portfolioUrl = applicant.portfolio_url;
   const currentStatus = applicant.status || (applicant.granted ? 'accepted' : 'pending');
-
-  const deliverableItems = useMemo<DeliverableItem[]>(() => {
-    const list = normalizeDeliverables(applicant.deliverables || []);
-    if (portfolioUrl) {
-      const portfolioType = detectDeliverableType(portfolioUrl, 'Portfolio Preview');
-      if (portfolioType === 'image' || portfolioType === 'pdf') {
-        list.push({
-          url: portfolioUrl,
-          name: portfolioUrl.split('/').pop()?.split('?')[0] || 'Portfolio Deliverable',
-          type: portfolioType,
-        });
-      }
-    }
-    return list;
-  }, [applicant.deliverables, portfolioUrl]);
 
   const handleCopyWallet = () => {
     if (walletAddr) {
@@ -160,19 +136,6 @@ export function ApplicantCard({ applicant, onAccept, onDeny, onOpenChat, isProce
         </div>
       )}
 
-      {/* Proof-of-Work Deliverables Preview */}
-      {deliverableItems.length > 0 && (
-        <div className="space-y-1.5 pt-1">
-          <h4 className="text-[11px] font-semibold text-[#71717a] uppercase tracking-wider">
-            Proof-of-Work Deliverables
-          </h4>
-          <DeliverablePreview
-            items={deliverableItems}
-            onInspect={(idx) => setLightboxIndex(idx)}
-          />
-        </div>
-      )}
-
       {/* Submission Date & Action Buttons Footer */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-3 border-t border-[#27272a]/60">
         {applicant.created_at && (
@@ -217,14 +180,6 @@ export function ApplicantCard({ applicant, onAccept, onDeny, onOpenChat, isProce
           </div>
         )}
       </div>
-
-      {lightboxIndex !== null && (
-        <ImageLightboxModal
-          items={deliverableItems}
-          initialIndex={lightboxIndex}
-          onClose={() => setLightboxIndex(null)}
-        />
-      )}
 
     </div>
   );
