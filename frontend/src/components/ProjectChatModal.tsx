@@ -5,7 +5,7 @@ import { toast } from 'sonner';
 import { authFetch } from '@/lib/api';
 import { useWalletStore } from '@/store/walletStore';
 import { CryptoId } from '@/components/ui/CryptoId';
-import { useEscapeKey } from '@/hooks/useEscapeKey';
+import { MessageReactionBar } from '@/components/MessageReactionBar';
 
 export interface ChatMessage {
   id: string;
@@ -247,6 +247,12 @@ export function ProjectChatModal({
                   >
                     {msg.content}
                   </div>
+
+                  <MessageReactionBar
+                    messageId={msg.id}
+                    currentUserAddress={senderAddress}
+                    className={isMe ? 'items-end' : 'items-start'}
+                  />
                 </div>
               );
             })

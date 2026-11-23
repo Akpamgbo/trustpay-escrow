@@ -1,222 +1,310 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
-import { useTokenPrices } from '@/hooks/useTokenRates';
-import {
-  createAlert,
-  describeAlert,
-  evaluateAlerts,
-  formatPrice,
-  loadAlerts,
-  markTriggered,
-  saveAlerts,
-  type AlertDirection,
-  type AlertToken,
-  type PriceAlert,
-} from '@/lib/price-alerts';
+import React, { useState, useEffect, useId } from 'react';
+import Link from 'next/link';
+import { useTokenRates } from '../hooks/useTokenRates';
 
-export interface TokenPriceAlertWidgetProps {
-  /** "Fund Escrow Now" shortcut: opens the funding flow at the price that fired. */
-  onFundNow?: (alert: PriceAlert, price: number | undefined) => void;
-  className?: string;
+export interface PriceAlert {
+  id: string;
+  token: 'XLM' | 'USDC' | 'EURC';
+  condition: 'ABOVE' | 'BELOW';
+  threshold: number;
+  isActive: boolean;
+  createdAt: string;
+  triggeredAt?: string;
 }
 
-function notify(title: string, body: string) {
-  try {
-    if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-      new Notification(title, { body });
-    }
-  } catch {
-    /* notifications unsupported in this context */
+export const STORAGE_KEY = 'trustpay_price_alerts';
+
+export function evaluatePriceAlert(alert: PriceAlert, currentPrice: number): boolean {
+  if (!alert.isActive) return false;
+  if (alert.condition === 'ABOVE') {
+    return currentPrice >= alert.threshold;
   }
+  if (alert.condition === 'BELOW') {
+    return currentPrice <= alert.threshold;
+  }
+  return false;
 }
 
-/**
- * Price alerts for XLM / USDC (#253). Checks the feed every 60 s, raises a
- * browser notification when a threshold is crossed, and keeps alerts in
- * localStorage.
- */
-export function TokenPriceAlertWidget({ onFundNow, className = '' }: TokenPriceAlertWidgetProps) {
-  const { prices, error } = useTokenPrices();
+export function TokenPriceAlertWidget() {
+  const tokenSelectId = useId();
+  const conditionSelectId = useId();
+  const thresholdInputId = useId();
+  const { rates, lastUpdated, loading } = useTokenRates(60000);
   const [alerts, setAlerts] = useState<PriceAlert[]>([]);
-  const [hydrated, setHydrated] = useState(false);
-  const [token, setToken] = useState<AlertToken>('XLM');
-  const [direction, setDirection] = useState<AlertDirection>('above');
-  const [target, setTarget] = useState('');
-  const [formError, setFormError] = useState<string | null>(null);
-  const [permission, setPermission] = useState<string>(
-    typeof Notification !== 'undefined' ? Notification.permission : 'unsupported'
-  );
+  const [selectedToken, setSelectedToken] = useState<'XLM' | 'USDC' | 'EURC'>('XLM');
+  const [condition, setCondition] = useState<'ABOVE' | 'BELOW'>('ABOVE');
+  const [thresholdInput, setThresholdInput] = useState<string>('');
+  const [notificationStatus, setNotificationStatus] = useState<string>('');
+  const [activeBreaches, setActiveBreaches] = useState<string[]>([]);
+
+  // 1. Load alerts from localStorage
   useEffect(() => {
-    setAlerts(loadAlerts());
-    setHydrated(true);
+    try {
+      const stored = localStorage.getItem(STORAGE_KEY);
+      if (stored) {
+        setAlerts(JSON.parse(stored));
+      }
+    } catch (e) {
+      console.warn('Could not read price alerts from storage:', e);
+    }
   }, []);
 
-  useEffect(() => {
-    if (hydrated) saveAlerts(alerts);
-  }, [alerts, hydrated]);
-
-  // Evaluate when fresh prices arrive or the alert list changes. Triggered
-  // alerts are skipped, so this settles after one pass.
-  useEffect(() => {
-    if (!hydrated) return;
-    const fired = evaluateAlerts(alerts, prices);
-    if (fired.length === 0) return;
-    setAlerts((prev) => markTriggered(prev, fired, prices));
-    for (const alert of fired) {
-      notify('Price alert', `${describeAlert(alert)} — now $${formatPrice(prices[alert.token] ?? alert.target)}`);
+  // 2. Persist alerts to localStorage
+  const saveAlerts = (updated: PriceAlert[]) => {
+    setAlerts(updated);
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+    } catch (e) {
+      console.warn('Could not save price alerts to storage:', e);
     }
-  }, [prices, alerts, hydrated]);
-
-  const add = (event: React.FormEvent) => {
-    event.preventDefault();
-    const result = createAlert({ token, direction, target });
-    if (!result.ok) {
-      setFormError(result.error);
-      return;
-    }
-    setAlerts((prev) => [...prev, result.alert]);
-    setTarget('');
-    setFormError(null);
   };
 
-  const requestPermission = async () => {
-    if (typeof Notification === 'undefined') return;
-    setPermission(await Notification.requestPermission());
+  // 3. Request browser notification permission
+  const requestNotificationPermission = async () => {
+    if (typeof window !== 'undefined' && 'Notification' in window) {
+      try {
+        const perm = await Notification.requestPermission();
+        setNotificationStatus(perm);
+      } catch (err) {
+        console.warn('Notification permission error:', err);
+      }
+    }
+  };
+
+  // 4. Evaluate breaches against live rates
+  useEffect(() => {
+    const breaches: string[] = [];
+    alerts.forEach((alert) => {
+      const currentPrice = rates[alert.token];
+      if (evaluatePriceAlert(alert, currentPrice)) {
+        breaches.push(alert.id);
+        if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+          new Notification(`TrustPay Price Alert: ${alert.token}`, {
+            body: `${alert.token} is now $${currentPrice.toFixed(4)} (${alert.condition.toLowerCase()} target $${alert.threshold}). Optimal funding window open!`,
+            icon: '/favicon.ico',
+          });
+        }
+      }
+    });
+    setActiveBreaches(breaches);
+  }, [rates, alerts]);
+
+  // 5. Add Alert Handler
+  const handleAddAlert = (e: React.FormEvent) => {
+    e.preventDefault();
+    const val = parseFloat(thresholdInput);
+    if (isNaN(val) || val <= 0) return;
+
+    const newAlert: PriceAlert = {
+      id: `alert-${Date.now()}`,
+      token: selectedToken,
+      condition,
+      threshold: val,
+      isActive: true,
+      createdAt: new Date().toISOString(),
+    };
+
+    saveAlerts([...alerts, newAlert]);
+    setThresholdInput('');
+  };
+
+  // 6. Delete Alert Handler
+  const handleDeleteAlert = (id: string) => {
+    saveAlerts(alerts.filter((a) => a.id !== id));
+  };
+
+  // 7. Toggle Alert Active Status
+  const handleToggleActive = (id: string) => {
+    saveAlerts(
+      alerts.map((a) => (a.id === id ? { ...a, isActive: !a.isActive } : a))
+    );
   };
 
   return (
-    <section
-      className={`bg-[#18181b] border border-[#27272a] rounded-2xl p-5 space-y-4 ${className}`}
-      aria-labelledby="price-alert-heading"
-      data-testid="price-alert-widget"
+    <div
+      data-testid="token-price-alert-widget"
+      className="p-5 rounded-2xl bg-[#18181b]/90 border border-[#27272a] shadow-xl text-white space-y-5"
     >
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h3 id="price-alert-heading" className="text-sm font-bold text-white">
-            Price alerts
-          </h3>
-          <p className="text-[11px] text-[#71717a]" data-testid="price-alert-current">
-            XLM {prices.XLM !== undefined ? `$${formatPrice(prices.XLM)}` : '—'} · USDC{' '}
-            {prices.USDC !== undefined ? `$${formatPrice(prices.USDC)}` : '—'} · checked every 60s
-          </p>
+      {/* Header */}
+      <div className="flex items-center justify-between border-b border-[#27272a] pb-3">
+        <div className="flex items-center space-x-2">
+          <span className="w-2.5 h-2.5 rounded-full bg-blue-500 animate-pulse" />
+          <h3 className="text-sm font-bold tracking-tight">Token Price & Funding Alert Trigger</h3>
         </div>
-        {permission !== 'granted' && permission !== 'unsupported' && (
-          <button
-            type="button"
-            onClick={requestPermission}
-            className="text-[11px] text-indigo-400 hover:text-indigo-300"
-            data-testid="price-alert-enable-notifications"
-          >
-            Enable notifications
-          </button>
-        )}
+        <div className="text-[11px] text-[#a1a1aa] flex items-center space-x-2">
+          <span>XLM: ${rates.XLM.toFixed(4)}</span>
+          <span className="text-[#3f3f46]">|</span>
+          <span>USDC: ${rates.USDC.toFixed(2)}</span>
+        </div>
       </div>
 
-      {error && alerts.length > 0 && (
-        <p className="text-[11px] text-amber-300" role="status">
-          Price feed unavailable. Alerts will resume when it recovers.
-        </p>
-      )}
-
-      <form onSubmit={add} className="flex flex-wrap items-end gap-2" aria-label="Add price alert">
-        <label className="text-[11px] text-[#a1a1aa]">
-          Token
-          <select
-            value={token}
-            onChange={(e) => setToken(e.target.value as AlertToken)}
-            className="block mt-1 px-2 py-1.5 bg-[#232326] border border-[#333338] rounded-lg text-white text-xs"
-            data-testid="price-alert-token"
-          >
-            <option value="XLM">XLM</option>
-            <option value="USDC">USDC</option>
-          </select>
-        </label>
-        <label className="text-[11px] text-[#a1a1aa]">
-          Alert when
-          <select
-            value={direction}
-            onChange={(e) => setDirection(e.target.value as AlertDirection)}
-            className="block mt-1 px-2 py-1.5 bg-[#232326] border border-[#333338] rounded-lg text-white text-xs"
-            data-testid="price-alert-direction"
-          >
-            <option value="above">goes above</option>
-            <option value="below">drops below</option>
-          </select>
-        </label>
-        <label className="text-[11px] text-[#a1a1aa]">
-          Price (USD)
-          <input
-            type="number"
-            inputMode="decimal"
-            step="any"
-            min="0"
-            value={target}
-            onChange={(e) => setTarget(e.target.value)}
-            placeholder="0.15"
-            className="block mt-1 w-24 px-2 py-1.5 bg-[#232326] border border-[#333338] rounded-lg text-white text-xs"
-            data-testid="price-alert-target"
-          />
-        </label>
-        <button
-          type="submit"
-          className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-lg"
-          data-testid="price-alert-add"
+      {/* Active Breach Banner */}
+      {activeBreaches.length > 0 && (
+        <div
+          data-testid="price-breach-banner"
+          className="p-3 rounded-xl bg-blue-500/10 border border-blue-500/30 flex items-center justify-between text-xs"
         >
-          Add alert
-        </button>
-      </form>
-      {formError && (
-        <p className="text-[11px] text-red-400" role="alert">
-          {formError}
-        </p>
+          <div className="flex items-center space-x-2">
+            <span className="text-blue-400 font-bold">Favorable Rate Detected:</span>
+            <span className="text-[#e4e4e7]">Threshold criteria met for active alerts!</span>
+          </div>
+          <Link
+            href="/projects/create"
+            data-testid="fund-escrow-now-cta"
+            className="px-3 py-1 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-bold text-xs rounded-lg transition-all shadow-md shadow-blue-600/20"
+          >
+            Fund Escrow Now ↗
+          </Link>
+        </div>
       )}
 
-      {alerts.length === 0 ? (
-        <p className="text-xs text-[#71717a]" data-testid="price-alert-empty">
-          No alerts yet.
-        </p>
-      ) : (
-        <ul className="space-y-2" data-testid="price-alert-list">
-          {alerts.map((alert) => (
-            <li
-              key={alert.id}
-              className="flex items-center justify-between gap-2 bg-[#1c1c20] border border-[#27272a] rounded-xl p-2.5 text-xs"
-              data-testid={`price-alert-${alert.id}`}
+      {/* Alert Creator Form */}
+      <form onSubmit={handleAddAlert} className="space-y-3" data-testid="alert-form">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+          <div>
+            <label htmlFor={tokenSelectId} className="text-[11px] text-[#a1a1aa] block mb-1">
+              Asset
+            </label>
+            <select
+              id={tokenSelectId}
+              data-testid="token-select"
+              value={selectedToken}
+              onChange={(e) => setSelectedToken(e.target.value as 'XLM' | 'USDC' | 'EURC')}
+              className="w-full bg-[#09090b] border border-[#27272a] rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500"
             >
-              <div>
-                <span className="text-white font-semibold">{describeAlert(alert)}</span>
-                {alert.triggeredAt !== undefined && (
-                  <span className="ml-2 text-emerald-400" data-testid={`price-alert-triggered-${alert.id}`}>
-                    Triggered at ${formatPrice(alert.triggeredPrice ?? alert.target)}
-                  </span>
-                )}
-              </div>
-              <div className="flex items-center gap-2">
-                {alert.triggeredAt !== undefined && onFundNow && (
-                  <button
-                    type="button"
-                    onClick={() => onFundNow(alert, alert.triggeredPrice)}
-                    className="px-2.5 py-1 bg-emerald-700 hover:bg-emerald-600 text-white rounded-lg font-bold"
-                    data-testid={`price-alert-fund-${alert.id}`}
-                  >
-                    Fund Escrow Now
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => setAlerts((prev) => prev.filter((a) => a.id !== alert.id))}
-                  aria-label={`Delete alert ${describeAlert(alert)}`}
-                  className="text-[#71717a] hover:text-red-400"
-                  data-testid={`price-alert-delete-${alert.id}`}
+              <option value="XLM">XLM (Stellar Lumens)</option>
+              <option value="USDC">USDC (Stellar USD)</option>
+              <option value="EURC">EURC (Stellar EUR)</option>
+            </select>
+          </div>
+
+          <div>
+            <label htmlFor={conditionSelectId} className="text-[11px] text-[#a1a1aa] block mb-1">
+              Condition
+            </label>
+            <select
+              id={conditionSelectId}
+              data-testid="condition-select"
+              value={condition}
+              onChange={(e) => setCondition(e.target.value as 'ABOVE' | 'BELOW')}
+              className="w-full bg-[#09090b] border border-[#27272a] rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500"
+            >
+              <option value="ABOVE">Rises Above (&gt;=)</option>
+              <option value="BELOW">Drops Below (&lt;=)</option>
+            </select>
+          </div>
+
+          <div>
+            <label htmlFor={thresholdInputId} className="text-[11px] text-[#a1a1aa] block mb-1">
+              Target Price (USD)
+            </label>
+            <input
+              id={thresholdInputId}
+              type="number"
+              step="0.0001"
+              min="0"
+              data-testid="threshold-input"
+              value={thresholdInput}
+              onChange={(e) => setThresholdInput(e.target.value)}
+              placeholder="e.g. 0.1500"
+              className="w-full bg-[#09090b] border border-[#27272a] rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500"
+            />
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between pt-1">
+          <button
+            type="button"
+            onClick={requestNotificationPermission}
+            className="text-[11px] text-[#71717a] hover:text-[#a1a1aa] transition-colors"
+          >
+            {notificationStatus === 'granted'
+              ? 'Push Notifications Active'
+              : 'Enable Browser Push Notifications'}
+          </button>
+          <button
+            type="submit"
+            data-testid="add-alert-button"
+            className="px-4 py-1.5 bg-[#27272a] hover:bg-[#3f3f46] text-white text-xs font-semibold rounded-lg transition-colors"
+          >
+            Add Alert
+          </button>
+        </div>
+      </form>
+
+      {/* Alerts List */}
+      <div className="space-y-2 pt-2 border-t border-[#27272a]/60">
+        <div className="text-[11px] text-[#a1a1aa] font-semibold uppercase tracking-wider">
+          Configured Thresholds ({alerts.length})
+        </div>
+
+        {alerts.length === 0 ? (
+          <div className="text-xs text-[#71717a] py-3 text-center">
+            No price alerts configured. Add a threshold above to trigger automatic notifications.
+          </div>
+        ) : (
+          <div className="space-y-1.5" data-testid="alerts-list">
+            {alerts.map((alert) => {
+              const isBreached = activeBreaches.includes(alert.id);
+              return (
+                <div
+                  key={alert.id}
+                  data-testid={`alert-item-${alert.id}`}
+                  className={`p-2.5 rounded-xl border flex items-center justify-between transition-colors ${
+                    isBreached
+                      ? 'bg-blue-600/10 border-blue-500/40 text-blue-200'
+                      : alert.isActive
+                      ? 'bg-[#09090b]/80 border-[#27272a] text-[#e4e4e7]'
+                      : 'bg-[#09090b]/40 border-[#27272a]/50 text-[#71717a]'
+                  }`}
                 >
-                  ✕
-                </button>
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
-    </section>
+                  <div className="flex items-center space-x-2">
+                    <span
+                      className={`w-2 h-2 rounded-full ${
+                        isBreached
+                          ? 'bg-blue-400 animate-ping'
+                          : alert.isActive
+                          ? 'bg-emerald-400'
+                          : 'bg-[#52525b]'
+                      }`}
+                    />
+                    <span className="font-bold text-xs">{alert.token}</span>
+                    <span className="text-xs text-[#a1a1aa]">
+                      {alert.condition === 'ABOVE' ? '>=' : '<='} ${alert.threshold.toFixed(4)}
+                    </span>
+                    {isBreached && (
+                      <span className="text-[10px] font-bold text-blue-400 bg-blue-500/20 px-2 py-0.5 rounded-full">
+                        TRIGGERED
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="flex items-center space-x-2">
+                    <button
+                      type="button"
+                      data-testid={`toggle-alert-${alert.id}`}
+                      onClick={() => handleToggleActive(alert.id)}
+                      className="text-[11px] text-[#a1a1aa] hover:text-white transition-colors"
+                    >
+                      {alert.isActive ? 'Disable' : 'Enable'}
+                    </button>
+                    <button
+                      type="button"
+                      data-testid={`delete-alert-${alert.id}`}
+                      onClick={() => handleDeleteAlert(alert.id)}
+                      className="text-[11px] text-red-400 hover:text-red-300 transition-colors"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
   );
 }

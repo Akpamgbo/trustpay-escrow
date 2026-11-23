@@ -1,146 +1,192 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
-import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
-  FEE_MULTIPLIERS,
-  FEE_TIERS,
-  FEE_TIER_LABELS,
-  buildFeeSelection,
-  estimateInclusionSeconds,
-  formatStroops,
-  stroopsToXlm,
-  type FeeSelection,
-  type FeeTier,
-} from '@/lib/fee-estimator';
+  FeeSpeedTier,
+  NetworkFeeStats,
+  calculateFeeTiers,
+  fetchStellarFeeStats,
+} from '@/lib/soroban';
 
 export interface GasFeeEstimatorWidgetProps {
-  /** Called with the chosen preset whenever it (or the network fee) changes. */
-  onChange?: (selection: FeeSelection) => void;
-  defaultTier?: FeeTier;
+  initialTier?: FeeSpeedTier;
+  onFeeSelected?: (feeStroops: number, tier: FeeSpeedTier) => void;
   className?: string;
+  autoRefreshIntervalMs?: number;
 }
 
-/**
- * Live Stellar network fee gauge with Standard / Fast / Urgent presets (#256).
- * The selection is reported through `onChange` so the parent can apply it to
- * Soroban invocation envelopes (see `setSorobanBaseFee`).
- */
-export function GasFeeEstimatorWidget({
-  onChange,
-  defaultTier = 'standard',
+export function stroopsToXlm(stroops: number): string {
+  const xlm = stroops / 10000000;
+  return xlm.toFixed(7).replace(/\.?0+$/, '') || '0';
+}
+
+export const GasFeeEstimatorWidget: React.FC<GasFeeEstimatorWidgetProps> = ({
+  initialTier = 'standard',
+  onFeeSelected,
   className = '',
-}: GasFeeEstimatorWidgetProps) {
-  const { fees, loading, error, refresh } = useNetworkStatus();
-  const [tier, setTier] = useState<FeeTier>(defaultTier);
+  autoRefreshIntervalMs = 0,
+}) => {
+  const [selectedTier, setSelectedTier] = useState<FeeSpeedTier>(initialTier);
+  const [stats, setStats] = useState<NetworkFeeStats>({
+    baseFeeStroops: 100,
+    surgeMultiplier: 1.0,
+    isSurgeActive: false,
+    ledgerCapacityUsage: 0.12,
+    tiers: calculateFeeTiers(100),
+  });
+  const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
+
+  const loadFeeStats = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const data = await fetchStellarFeeStats();
+      setStats(data);
+      setLastUpdated(new Date());
+      if (onFeeSelected) {
+        onFeeSelected(data.tiers[selectedTier].feeStroops, selectedTier);
+      }
+    } catch {
+      // Fallback state is preserved
+    } finally {
+      setIsLoading(false);
+    }
+  }, [selectedTier, onFeeSelected]);
 
   useEffect(() => {
-    if (fees) onChange?.(buildFeeSelection(fees, tier));
-    // onChange is intentionally excluded: parents often pass inline callbacks.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fees?.baseFee, fees?.minBaseFee, tier]);
+    loadFeeStats();
+  }, []);
+
+  useEffect(() => {
+    if (autoRefreshIntervalMs > 0) {
+      const interval = setInterval(loadFeeStats, autoRefreshIntervalMs);
+      return () => clearInterval(interval);
+    }
+  }, [autoRefreshIntervalMs, loadFeeStats]);
+
+  const handleSelectTier = (tier: FeeSpeedTier) => {
+    setSelectedTier(tier);
+    if (onFeeSelected && stats.tiers[tier]) {
+      onFeeSelected(stats.tiers[tier].feeStroops, tier);
+    }
+  };
+
+  const activeFeeStroops = stats.tiers[selectedTier]?.feeStroops || 100;
+  const activeFeeXlm = stroopsToXlm(activeFeeStroops);
 
   return (
-    <section
-      className={`bg-[#18181b] border border-[#27272a] rounded-2xl p-5 space-y-4 ${className}`}
-      aria-labelledby="gas-fee-heading"
-      data-testid="gas-fee-widget"
+    <div
+      className={`rounded-xl border border-border/80 bg-card p-4 text-card-foreground shadow-sm ${className}`}
+      data-testid="gas-fee-estimator-widget"
     >
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h3 id="gas-fee-heading" className="text-sm font-bold text-white">
-            Network fee
-          </h3>
-          <p className="text-[11px] text-[#71717a]">Average of the last 5 ledgers (Horizon)</p>
+      <div className="flex items-center justify-between pb-3 border-b border-border/50">
+        <div className="flex items-center gap-2">
+          <span
+            className={`inline-block w-2.5 h-2.5 rounded-full ${
+              stats.isSurgeActive ? 'bg-amber-500 animate-ping' : 'bg-emerald-500'
+            }`}
+            data-testid="network-status-indicator"
+          />
+          <h4 className="text-sm font-semibold tracking-tight">Stellar Gas & Fee Estimator</h4>
         </div>
-        <button
-          type="button"
-          onClick={refresh}
-          className="text-[11px] text-[#a1a1aa] hover:text-white"
-          aria-label="Refresh network fees"
-        >
-          ↻ Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] text-muted-foreground" data-testid="last-updated-text">
+            {lastUpdated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+          </span>
+          <button
+            type="button"
+            onClick={loadFeeStats}
+            disabled={isLoading}
+            className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+            title="Refresh fee stats"
+            aria-label="Refresh fees"
+            data-testid="refresh-fees-btn"
+          >
+            <svg
+              className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`}
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+              />
+            </svg>
+          </button>
+        </div>
       </div>
 
-      {loading && !fees && (
-        <p className="text-xs text-[#a1a1aa]" role="status">
-          Loading network fees…
-        </p>
-      )}
-      {error && !fees && (
-        <p className="text-xs text-red-400" role="alert" data-testid="gas-fee-error">
-          Couldn&apos;t load network fees. {error}
-        </p>
+      {stats.isSurgeActive && (
+        <div
+          className="mt-3 p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-500 text-xs flex items-center gap-2"
+          data-testid="surge-warning-banner"
+        >
+          <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
+            />
+          </svg>
+          <span>
+            Ledger congestion detected ({(stats.ledgerCapacityUsage * 100).toFixed(0)}% capacity). Surge pricing multiplier (
+            {stats.surgeMultiplier}x) applied to base fee.
+          </span>
+        </div>
       )}
 
-      {fees && (
-        <>
-          <dl className="grid grid-cols-2 gap-3 text-xs">
-            <div className="bg-[#1c1c20] border border-[#27272a] rounded-xl p-3">
-              <dt className="text-[#71717a]">Base fee</dt>
-              <dd className="text-white font-semibold" data-testid="gas-base-fee">
-                {formatStroops(fees.baseFee)}
-              </dd>
-            </div>
-            <div className="bg-[#1c1c20] border border-[#27272a] rounded-xl p-3">
-              <dt className="text-[#71717a]">Surge fee</dt>
-              <dd className="text-white font-semibold" data-testid="gas-surge-fee">
-                {formatStroops(fees.surgeFee)}
-              </dd>
-            </div>
-          </dl>
+      <div className="grid grid-cols-3 gap-2 mt-3">
+        {(['standard', 'fast', 'urgent'] as FeeSpeedTier[]).map((tierKey) => {
+          const tier = stats.tiers[tierKey];
+          const isSelected = selectedTier === tierKey;
+          const tierLabels: Record<FeeSpeedTier, { name: string; badge: string }> = {
+            standard: { name: 'Standard', badge: 'Normal' },
+            fast: { name: 'Fast', badge: '1.5x' },
+            urgent: { name: 'Urgent', badge: '2.0x' },
+          };
 
-          {fees.isSurging && (
-            <p
-              className="text-[11px] text-amber-300 bg-amber-950/30 border border-amber-500/30 rounded-lg p-2"
-              role="status"
-              data-testid="gas-surge-warning"
+          return (
+            <button
+              key={tierKey}
+              type="button"
+              onClick={() => handleSelectTier(tierKey)}
+              className={`flex flex-col p-2.5 rounded-lg border text-left transition-all ${
+                isSelected
+                  ? 'border-primary bg-primary/10 shadow-sm ring-1 ring-primary'
+                  : 'border-border/60 hover:border-border hover:bg-muted/40'
+              }`}
+              data-testid={`fee-tier-btn-${tierKey}`}
+              aria-pressed={isSelected}
             >
-              The network is busy. Standard fees may take longer; consider Fast or Urgent.
-            </p>
-          )}
+              <div className="flex items-center justify-between w-full">
+                <span className="text-xs font-semibold capitalize">{tierLabels[tierKey].name}</span>
+                <span className="text-[10px] px-1 py-0.5 rounded bg-muted font-mono text-muted-foreground">
+                  {tierLabels[tierKey].badge}
+                </span>
+              </div>
+              <div className="mt-1 text-sm font-bold font-mono text-foreground">
+                {tier.feeStroops}{' '}
+                <span className="text-[10px] font-normal text-muted-foreground">stroops</span>
+              </div>
+              <div className="mt-0.5 text-[10px] text-muted-foreground flex items-center justify-between">
+                <span>~{tier.estimatedTimeSec}s</span>
+                <span>{stroopsToXlm(tier.feeStroops)} XLM</span>
+              </div>
+            </button>
+          );
+        })}
+      </div>
 
-          <div role="radiogroup" aria-label="Transaction speed" className="grid grid-cols-3 gap-2">
-            {FEE_TIERS.map((option) => {
-              const selection = buildFeeSelection(fees, option);
-              const seconds = estimateInclusionSeconds(option, fees.capacityUsage);
-              const active = option === tier;
-              return (
-                <button
-                  key={option}
-                  type="button"
-                  role="radio"
-                  aria-checked={active}
-                  onClick={() => setTier(option)}
-                  data-testid={`fee-tier-${option}`}
-                  className={`rounded-xl border p-3 text-left transition-colors ${
-                    active
-                      ? 'border-indigo-500 bg-indigo-500/10 text-white'
-                      : 'border-[#27272a] bg-[#1c1c20] text-[#a1a1aa] hover:border-[#3f3f46]'
-                  }`}
-                >
-                  <span className="block text-xs font-bold">{FEE_TIER_LABELS[option]}</span>
-                  <span className="block text-[10px] text-[#71717a]">
-                    {FEE_MULTIPLIERS[option]}x base
-                  </span>
-                  <span className="block text-xs mt-1" data-testid={`fee-tier-${option}-fee`}>
-                    {formatStroops(selection.feeStroops)}
-                  </span>
-                  <span className="block text-[10px] text-[#71717a]" data-testid={`fee-tier-${option}-eta`}>
-                    ~{seconds}s
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-
-          <p className="text-[11px] text-[#71717a]" data-testid="gas-selected-summary">
-            Selected: {FEE_TIER_LABELS[tier]} ·{' '}
-            {stroopsToXlm(buildFeeSelection(fees, tier).feeStroops).toFixed(7)} XLM per operation
-          </p>
-        </>
-      )}
-    </section>
+      <div className="mt-3 pt-2.5 border-t border-border/40 flex items-center justify-between text-xs text-muted-foreground">
+        <span>Selected Fee Allowance:</span>
+        <span className="font-mono font-medium text-foreground" data-testid="selected-fee-summary">
+          {activeFeeStroops} stroops ({activeFeeXlm} XLM)
+        </span>
+      </div>
+    </div>
   );
-}
+};

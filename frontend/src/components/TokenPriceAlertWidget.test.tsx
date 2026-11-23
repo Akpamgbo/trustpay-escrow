@@ -1,97 +1,154 @@
-import React from 'react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { TokenPriceAlertWidget } from './TokenPriceAlertWidget';
-import { PRICE_ALERTS_STORAGE_KEY } from '@/lib/price-alerts';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import '@testing-library/jest-dom/vitest';
+import { render, screen, fireEvent, within } from '@testing-library/react';
+import {
+  TokenPriceAlertWidget,
+  evaluatePriceAlert,
+  PriceAlert,
+  STORAGE_KEY,
+} from './TokenPriceAlertWidget';
 
-const priceState = vi.hoisted(() => ({ prices: {} as Record<string, number> }));
+describe('TokenPriceAlertWidget & Evaluation Logic (#253)', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    vi.clearAllMocks();
+  });
 
-vi.mock('@/hooks/useTokenRates', () => ({
-  useTokenPrices: () => ({ prices: priceState.prices, loading: false, error: null, lastUpdated: 1 }),
-}));
+  describe('evaluatePriceAlert logic', () => {
+    it('evaluates ABOVE condition accurately', () => {
+      const alert: PriceAlert = {
+        id: '1',
+        token: 'XLM',
+        condition: 'ABOVE',
+        threshold: 0.15,
+        isActive: true,
+        createdAt: new Date().toISOString(),
+      };
+      expect(evaluatePriceAlert(alert, 0.16)).toBe(true);
+      expect(evaluatePriceAlert(alert, 0.15)).toBe(true);
+      expect(evaluatePriceAlert(alert, 0.14)).toBe(false);
+    });
 
-function addAlert(token: string, direction: string, target: string) {
-  fireEvent.change(screen.getByTestId('price-alert-token'), { target: { value: token } });
-  fireEvent.change(screen.getByTestId('price-alert-direction'), { target: { value: direction } });
-  fireEvent.change(screen.getByTestId('price-alert-target'), { target: { value: target } });
-  fireEvent.click(screen.getByTestId('price-alert-add'));
-}
+    it('evaluates BELOW condition accurately', () => {
+      const alert: PriceAlert = {
+        id: '2',
+        token: 'XLM',
+        condition: 'BELOW',
+        threshold: 0.10,
+        isActive: true,
+        createdAt: new Date().toISOString(),
+      };
+      expect(evaluatePriceAlert(alert, 0.09)).toBe(true);
+      expect(evaluatePriceAlert(alert, 0.10)).toBe(true);
+      expect(evaluatePriceAlert(alert, 0.11)).toBe(false);
+    });
 
-beforeEach(() => {
-  window.localStorage.clear();
-  priceState.prices = { XLM: 0.1, USDC: 1 };
-});
-
-afterEach(() => vi.unstubAllGlobals());
-
-describe('TokenPriceAlertWidget (#253)', () => {
-  it('adds an alert to the list and persists it', async () => {
-    render(<TokenPriceAlertWidget />);
-    expect(screen.getByTestId('price-alert-empty')).toBeInTheDocument();
-
-    addAlert('XLM', 'above', '0.15');
-
-    expect(screen.getByTestId('price-alert-list')).toHaveTextContent('XLM > $0.15');
-    await waitFor(() => {
-      const stored = JSON.parse(window.localStorage.getItem(PRICE_ALERTS_STORAGE_KEY) ?? '[]');
-      expect(stored).toHaveLength(1);
-      expect(stored[0]).toMatchObject({ token: 'XLM', direction: 'above', target: 0.15 });
+    it('returns false when alert is inactive regardless of price', () => {
+      const alert: PriceAlert = {
+        id: '3',
+        token: 'XLM',
+        condition: 'ABOVE',
+        threshold: 0.10,
+        isActive: false,
+        createdAt: new Date().toISOString(),
+      };
+      expect(evaluatePriceAlert(alert, 0.50)).toBe(false);
     });
   });
 
-  it('deletes an alert from the list and from storage', async () => {
-    render(<TokenPriceAlertWidget />);
-    addAlert('XLM', 'above', '0.15');
-    addAlert('USDC', 'below', '0.98');
-    expect(screen.getAllByRole('listitem')).toHaveLength(2);
-
-    fireEvent.click(screen.getByLabelText('Delete alert XLM > $0.15'));
-
-    expect(screen.getAllByRole('listitem')).toHaveLength(1);
-    expect(screen.queryByText('XLM > $0.15')).not.toBeInTheDocument();
-    await waitFor(() => {
-      expect(JSON.parse(window.localStorage.getItem(PRICE_ALERTS_STORAGE_KEY) ?? '[]')).toHaveLength(1);
+  describe('Widget Component Rendering & Interactions', () => {
+    it('renders the alert widget and empty state message', () => {
+      render(<TokenPriceAlertWidget />);
+      expect(screen.getByTestId('token-price-alert-widget')).toBeInTheDocument();
+      expect(screen.getByText(/Token Price & Funding Alert Trigger/i)).toBeInTheDocument();
+      expect(screen.getByText(/No price alerts configured/i)).toBeInTheDocument();
     });
-  });
 
-  it('rejects an invalid target with an error', () => {
-    render(<TokenPriceAlertWidget />);
-    addAlert('XLM', 'above', '0');
-    expect(screen.getByRole('alert')).toHaveTextContent('greater than 0');
-    expect(screen.getByTestId('price-alert-empty')).toBeInTheDocument();
-  });
+    it('adds a new price alert and persists to localStorage', () => {
+      render(<TokenPriceAlertWidget />);
+      const thresholdInput = screen.getByTestId('threshold-input');
+      const addButton = screen.getByTestId('add-alert-button');
 
-  it('restores saved alerts on load', () => {
-    window.localStorage.setItem(
-      PRICE_ALERTS_STORAGE_KEY,
-      JSON.stringify([{ id: 's1', token: 'XLM', direction: 'above', target: 0.2, createdAt: 1 }])
-    );
-    render(<TokenPriceAlertWidget />);
-    expect(screen.getByTestId('price-alert-list')).toHaveTextContent('XLM > $0.20');
-  });
+      fireEvent.change(thresholdInput, { target: { value: '0.1500' } });
+      fireEvent.click(addButton);
 
-  it('fires a browser notification once on a breach and offers Fund Escrow Now', async () => {
-    const created: Array<[string, NotificationOptions | undefined]> = [];
-    class FakeNotification {
-      static permission = 'granted';
-      static requestPermission = vi.fn();
-      constructor(title: string, options?: NotificationOptions) {
-        created.push([title, options]);
-      }
-    }
-    vi.stubGlobal('Notification', FakeNotification);
-    priceState.prices = { XLM: 0.2, USDC: 1 };
+      expect(screen.getByText(/Configured Thresholds \(1\)/i)).toBeInTheDocument();
+      const list = screen.getByTestId('alerts-list');
+      expect(within(list).getByText('XLM')).toBeInTheDocument();
+      expect(within(list).getByText(/>= \$0.1500/i)).toBeInTheDocument();
 
-    const onFundNow = vi.fn();
-    render(<TokenPriceAlertWidget onFundNow={onFundNow} />);
-    addAlert('XLM', 'above', '0.15');
+      const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+      expect(stored.length).toBe(1);
+      expect(stored[0].threshold).toBe(0.15);
+    });
 
-    await waitFor(() => expect(created).toHaveLength(1));
-    expect(created[0][1]?.body).toContain('XLM > $0.15');
+    it('removes an alert when clicking Remove', () => {
+      const initialAlerts: PriceAlert[] = [
+        {
+          id: 'test-alert-1',
+          token: 'XLM',
+          condition: 'ABOVE',
+          threshold: 0.20,
+          isActive: true,
+          createdAt: new Date().toISOString(),
+        },
+      ];
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(initialAlerts));
 
-    const fund = await screen.findByText('Fund Escrow Now');
-    fireEvent.click(fund);
-    expect(onFundNow).toHaveBeenCalledWith(expect.objectContaining({ token: 'XLM' }), 0.2);
-    expect(created).toHaveLength(1); // not re-fired on later renders
+      render(<TokenPriceAlertWidget />);
+      expect(screen.getByText(/>= \$0.2000/i)).toBeInTheDocument();
+
+      const removeBtn = screen.getByTestId('delete-alert-test-alert-1');
+      fireEvent.click(removeBtn);
+
+      expect(screen.queryByText(/>= \$0.2000/i)).not.toBeInTheDocument();
+      const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+      expect(stored.length).toBe(0);
+    });
+
+    it('toggles an alert between enabled and disabled', () => {
+      const initialAlerts: PriceAlert[] = [
+        {
+          id: 'test-alert-2',
+          token: 'USDC',
+          condition: 'BELOW',
+          threshold: 0.99,
+          isActive: true,
+          createdAt: new Date().toISOString(),
+        },
+      ];
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(initialAlerts));
+
+      render(<TokenPriceAlertWidget />);
+      const toggleBtn = screen.getByTestId('toggle-alert-test-alert-2');
+      expect(toggleBtn).toHaveTextContent('Disable');
+
+      fireEvent.click(toggleBtn);
+      expect(toggleBtn).toHaveTextContent('Enable');
+
+      const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+      expect(stored[0].isActive).toBe(false);
+    });
+
+    it('renders the Fund Escrow Now quick action link when a threshold is breached', () => {
+      // XLM default rate is ~0.1245; threshold <= 0.15 will breach for 'ABOVE' if threshold <= 0.12
+      const initialAlerts: PriceAlert[] = [
+        {
+          id: 'breach-alert',
+          token: 'XLM',
+          condition: 'ABOVE',
+          threshold: 0.10, // 0.1245 >= 0.10 => BREACHED
+          isActive: true,
+          createdAt: new Date().toISOString(),
+        },
+      ];
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(initialAlerts));
+
+      render(<TokenPriceAlertWidget />);
+      expect(screen.getByTestId('price-breach-banner')).toBeInTheDocument();
+      const fundLink = screen.getByTestId('fund-escrow-now-cta');
+      expect(fundLink).toBeInTheDocument();
+      expect(fundLink).toHaveAttribute('href', '/projects/create');
+    });
   });
 });

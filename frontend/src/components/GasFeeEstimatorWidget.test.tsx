@@ -1,69 +1,101 @@
 import React from 'react';
-import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
-import { GasFeeEstimatorWidget } from './GasFeeEstimatorWidget';
-import type { NetworkFees } from '@/lib/fee-estimator';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import {
+  GasFeeEstimatorWidget,
+  stroopsToXlm,
+} from './GasFeeEstimatorWidget';
+import * as sorobanLib from '@/lib/soroban';
 
-const FEES: NetworkFees = {
-  baseFee: 100,
-  surgeFee: 300,
-  minBaseFee: 100,
-  capacityUsage: 0.2,
-  isSurging: false,
-  fetchedAt: 0,
-};
-
-const hookState = vi.hoisted(() => ({
-  value: { fees: null as NetworkFees | null, loading: false, error: null as string | null, refresh: () => {} },
-}));
-
-vi.mock('@/hooks/useNetworkStatus', () => ({
-  useNetworkStatus: () => hookState.value,
-}));
-
-beforeEach(() => {
-  hookState.value = { fees: FEES, loading: false, error: null, refresh: () => {} };
-});
-
-describe('GasFeeEstimatorWidget (#256)', () => {
-  it('shows the base and surge fee and the three speed presets with ETAs', () => {
-    render(<GasFeeEstimatorWidget />);
-    expect(screen.getByTestId('gas-base-fee')).toHaveTextContent('100 stroops');
-    expect(screen.getByTestId('gas-surge-fee')).toHaveTextContent('300 stroops');
-    expect(screen.getByTestId('fee-tier-standard-fee')).toHaveTextContent('100 stroops');
-    expect(screen.getByTestId('fee-tier-fast-fee')).toHaveTextContent('150 stroops');
-    expect(screen.getByTestId('fee-tier-urgent-fee')).toHaveTextContent('200 stroops');
-    const eta = parseFloat(screen.getByTestId('fee-tier-standard-eta').textContent!.replace(/[^\d.]/g, ''));
-    expect(eta).toBeLessThan(3);
+describe('GasFeeEstimatorWidget and Fee Utilities', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
   });
 
-  it('reports the default preset to the parent on mount', () => {
-    const onChange = vi.fn();
-    render(<GasFeeEstimatorWidget onChange={onChange} />);
-    expect(onChange).toHaveBeenLastCalledWith({ tier: 'standard', multiplier: 1, feeStroops: 100 });
+  describe('Helper Functions', () => {
+    it('converts stroops to XLM string properly', () => {
+      expect(stroopsToXlm(100)).toBe('0.00001');
+      expect(stroopsToXlm(10000000)).toBe('1');
+      expect(stroopsToXlm(150)).toBe('0.000015');
+      expect(stroopsToXlm(0)).toBe('0');
+    });
+
+    it('calculates 3 speed tiers with exact multipliers', () => {
+      const tiers = sorobanLib.calculateFeeTiers(200, 1.0);
+      expect(tiers.standard.feeStroops).toBe(200);
+      expect(tiers.standard.multiplier).toBe(1.0);
+      expect(tiers.standard.estimatedTimeSec).toBe(3);
+
+      expect(tiers.fast.feeStroops).toBe(300);
+      expect(tiers.fast.multiplier).toBe(1.5);
+      expect(tiers.fast.estimatedTimeSec).toBe(2);
+
+      expect(tiers.urgent.feeStroops).toBe(400);
+      expect(tiers.urgent.multiplier).toBe(2.0);
+      expect(tiers.urgent.estimatedTimeSec).toBe(1);
+    });
+
+    it('applies surge pricing multiplier when congestion is present', () => {
+      const tiers = sorobanLib.calculateFeeTiers(100, 1.5);
+      expect(tiers.standard.feeStroops).toBe(150);
+      expect(tiers.fast.feeStroops).toBe(225);
+      expect(tiers.urgent.feeStroops).toBe(300);
+    });
   });
 
-  it('selecting a preset updates the parent transaction parameters', () => {
-    const onChange = vi.fn();
-    render(<GasFeeEstimatorWidget onChange={onChange} />);
+  describe('GasFeeEstimatorWidget Component', () => {
+    it('renders widget title and all three tier buttons', async () => {
+      render(<GasFeeEstimatorWidget />);
 
-    fireEvent.click(screen.getByTestId('fee-tier-fast'));
-    expect(onChange).toHaveBeenLastCalledWith({ tier: 'fast', multiplier: 1.5, feeStroops: 150 });
-    expect(screen.getByTestId('fee-tier-fast')).toHaveAttribute('aria-checked', 'true');
+      expect(screen.getByText('Stellar Gas & Fee Estimator')).toBeInTheDocument();
+      expect(screen.getByTestId('fee-tier-btn-standard')).toBeInTheDocument();
+      expect(screen.getByTestId('fee-tier-btn-fast')).toBeInTheDocument();
+      expect(screen.getByTestId('fee-tier-btn-urgent')).toBeInTheDocument();
+      expect(screen.getByTestId('selected-fee-summary')).toBeInTheDocument();
+    });
 
-    fireEvent.click(screen.getByTestId('fee-tier-urgent'));
-    expect(onChange).toHaveBeenLastCalledWith({ tier: 'urgent', multiplier: 2, feeStroops: 200 });
-  });
+    it('toggles active tier and calls onFeeSelected callback when tier is clicked', async () => {
+      const onFeeSelected = vi.fn();
+      render(<GasFeeEstimatorWidget initialTier="standard" onFeeSelected={onFeeSelected} />);
 
-  it('warns when the network is surging', () => {
-    hookState.value = { ...hookState.value, fees: { ...FEES, isSurging: true } };
-    render(<GasFeeEstimatorWidget />);
-    expect(screen.getByTestId('gas-surge-warning')).toBeInTheDocument();
-  });
+      const fastBtn = screen.getByTestId('fee-tier-btn-fast');
+      fireEvent.click(fastBtn);
 
-  it('shows an error when fees cannot be loaded', () => {
-    hookState.value = { fees: null, loading: false, error: 'boom', refresh: () => {} };
-    render(<GasFeeEstimatorWidget />);
-    expect(screen.getByTestId('gas-fee-error')).toHaveTextContent('boom');
+      expect(fastBtn).toHaveAttribute('aria-pressed', 'true');
+      expect(onFeeSelected).toHaveBeenCalledWith(expect.any(Number), 'fast');
+
+      const urgentBtn = screen.getByTestId('fee-tier-btn-urgent');
+      fireEvent.click(urgentBtn);
+
+      expect(urgentBtn).toHaveAttribute('aria-pressed', 'true');
+      expect(onFeeSelected).toHaveBeenCalledWith(expect.any(Number), 'urgent');
+    });
+
+    it('renders surge warning banner when surge pricing is active', async () => {
+      vi.spyOn(sorobanLib, 'fetchStellarFeeStats').mockResolvedValueOnce({
+        baseFeeStroops: 200,
+        surgeMultiplier: 1.4,
+        isSurgeActive: true,
+        ledgerCapacityUsage: 0.92,
+        tiers: sorobanLib.calculateFeeTiers(200, 1.4),
+      });
+
+      render(<GasFeeEstimatorWidget />);
+
+      await waitFor(() => {
+        expect(screen.getByTestId('surge-warning-banner')).toBeInTheDocument();
+        expect(screen.getByText(/Ledger congestion detected/i)).toBeInTheDocument();
+      });
+    });
+
+    it('invokes fetchStellarFeeStats when refresh button is clicked', async () => {
+      const spy = vi.spyOn(sorobanLib, 'fetchStellarFeeStats');
+      render(<GasFeeEstimatorWidget />);
+
+      const refreshBtn = screen.getByTestId('refresh-fees-btn');
+      fireEvent.click(refreshBtn);
+
+      expect(spy).toHaveBeenCalled();
+    });
   });
 });
