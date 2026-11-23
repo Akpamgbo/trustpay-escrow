@@ -16,7 +16,7 @@ export interface Milestone {
   deliverable_url?: string;
   deliverable_notes?: string;
   deliverable_type?: string;
-  tx_hash?: string;
+  revision_count?: number;
 }
 
 export interface Project {
@@ -37,6 +37,8 @@ export interface Project {
   freelancer_address?: string;
   arbiter_id?: string;
   arbiter_address?: string;
+  arbiter_addresses?: string[];
+  dispute_reason?: string;
   contract_id?: string;
   project_id_onchain?: number | string | bigint;
   tx_hash?: string;
